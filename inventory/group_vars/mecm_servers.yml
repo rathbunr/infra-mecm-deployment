@@ -1,4 +1,8 @@
 ---
+# ============================================================================
+# Group variables for MECM standalone primary site servers
+# ============================================================================
+
 # ---------------------------------------------------------------------------
 # Site identity
 # ---------------------------------------------------------------------------
@@ -6,6 +10,7 @@ mecm_site_code: "P01"
 mecm_site_name: "Primary Site - Contoso"
 mecm_install_directory: "C:\\Program Files\\Microsoft Configuration Manager"
 mecm_prereq_path: "C:\\Temp\\MECM_Prereqs"
+mecm_product_id: "EVAL"                          # set to product key for licensed install
 
 # ---------------------------------------------------------------------------
 # Media locations (UNC paths accessible by the install account)
@@ -13,6 +18,11 @@ mecm_prereq_path: "C:\\Temp\\MECM_Prereqs"
 sql_media_unc: "\\\\fileserver.example.com\\software\\SQL2022"
 mecm_media_unc: "\\\\fileserver.example.com\\software\\MECM_CB_2403"
 mecm_prereq_unc: "\\\\fileserver.example.com\\software\\MECM_Prereqs"
+adk_media_unc: "\\\\fileserver.example.com\\software\\ADK"
+adk_winpe_media_unc: "\\\\fileserver.example.com\\software\\ADK_WinPE"
+odbc_driver_msi_unc: "\\\\fileserver.example.com\\software\\Redist\\msodbcsql18.msi"
+vcredist_x64_unc: "\\\\fileserver.example.com\\software\\Redist\\vc_redist.x64.exe"
+vcredist_x86_unc: "\\\\fileserver.example.com\\software\\Redist\\vc_redist.x86.exe"
 
 # ---------------------------------------------------------------------------
 # SQL Server settings
@@ -31,14 +41,13 @@ sql_collation: "SQL_Latin1_General_CP1_CI_AS"
 # ---------------------------------------------------------------------------
 domain_name: "example.com"
 domain_netbios: "EXAMPLE"
-ad_schema_extended: false          # set true after first successful run if desired
-system_management_container_created: false
 
 # ---------------------------------------------------------------------------
-# Certificate / PKI
+# Certificate / PKI  (ca_server, ca_name, ca_template_name injected by AAP)
 # ---------------------------------------------------------------------------
-ca_server: "{{ ca_server }}"                    # injected by AAP credential
-ca_template_name: "{{ ca_template_name }}"      # injected by AAP credential
+ca_server: "{{ ca_server }}"
+ca_name: "{{ ca_name }}"
+ca_template_name: "{{ ca_template_name }}"
 iis_cert_friendly_name: "MECM Site System Certificate"
 iis_cert_subject: "CN={{ inventory_hostname }}"
 
@@ -58,11 +67,3 @@ client_push_enabled: true
 client_push_target_ou: "OU=Workstations,DC=example,DC=com"
 client_push_accounts:
   - "{{ sccm_install_account }}"
-
-# ---------------------------------------------------------------------------
-# Service accounts (injected by AAP Custom Credential Type)
-# ---------------------------------------------------------------------------
-# sccm_install_account / sccm_install_password
-# sccm_naa_account / sccm_naa_password
-# sql_sa_password
-# domain_admin_user / domain_admin_password

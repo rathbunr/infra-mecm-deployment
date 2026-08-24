@@ -1,13 +1,22 @@
 ---
+# ============================================================================
+# wsus_install/tasks — WSUS role with SQL backend (not WID)
+# ============================================================================
+
 - name: Install WSUS role with SQL backend
   ansible.windows.win_feature:
     name:
-      - UpdateServices
       - UpdateServices-Services
       - UpdateServices-DB
     state: present
     include_management_tools: true
   register: wsus_feature
+  tags: [wsus]
+
+- name: Reboot if WSUS feature install required it
+  ansible.windows.win_reboot:
+    reboot_timeout: 600
+  when: wsus_feature.reboot_required | default(false)
   tags: [wsus]
 
 - name: Create WSUS content directory
@@ -16,12 +25,19 @@
     state: directory
   tags: [wsus]
 
+- name: Check if WSUS postinstall has already completed
+  ansible.windows.win_reg_stat:
+    path: HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup
+    name: ContentDir
+  register: wsus_postinstall_check
+  tags: [wsus]
+
 - name: Run WSUS post-install configuration
   ansible.windows.win_shell: |
-    & "C:\Program Files\Update Services\Tools\wsusutil.exe" postinstall CONTENT_DIR="{{ wsus_content_dir }}" SQL_INSTANCE_NAME="{{ wsus_sql_instance }}"
-  args:
-    creates: "{{ wsus_content_dir }}\\WsusContent"
-  when: wsus_feature is changed
+    & "C:\Program Files\Update Services\Tools\wsusutil.exe" postinstall `
+      CONTENT_DIR="{{ wsus_content_dir }}" `
+      SQL_INSTANCE_NAME="{{ wsus_sql_instance }}"
+  when: not wsus_postinstall_check.exists
   register: wsus_postinstall
   notify: restart wsus service
   tags: [wsus]
@@ -36,5 +52,5 @@
 - name: Debug WSUS post-install
   ansible.builtin.debug:
     var: wsus_postinstall
-  when: wsus_postinstall is defined
+  when: wsus_postinstall is defined and wsus_postinstall is changed
   tags: [wsus]

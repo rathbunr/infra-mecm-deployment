@@ -1,9 +1,29 @@
 ---
+# ============================================================================
+# prereqs/tasks — Validate environment, install OS features and MECM prereqs
+# ============================================================================
+# Sequence follows Microsoft's documented prerequisite order:
+#   1. Validate connectivity / domain membership
+#   2. Install Windows Features (single transaction)
+#   3. Disable IE ESC
+#   4. Firewall rules
+#   5. .NET Framework 4.8 verification
+#   6. Windows ADK + WinPE add-on
+#   7. Microsoft ODBC Driver 18 for SQL Server (>= 18.4.1.1)
+#   8. Visual C++ 2015-2022 Redistributable (x64 + x86)
+#   9. AD Schema extension (idempotent)
+#  10. System Management container + delegation
+#  11. Working directories
+# ============================================================================
+
+# -----------------------------------------------
+# 1. Validate connectivity
+# -----------------------------------------------
 - name: Validate WinRM connectivity
   ansible.windows.win_ping:
   tags: [prereqs, always]
 
-- name: Resolve DNS for target and domain controllers
+- name: Resolve DNS for target host and domain
   ansible.windows.win_shell: |
     Resolve-DnsName -Name {{ inventory_hostname }} -ErrorAction Stop | Out-Null
     Resolve-DnsName -Name {{ domain_name }} -ErrorAction Stop | Out-Null
@@ -14,21 +34,32 @@
   ansible.windows.win_shell: |
     $cs = Get-CimInstance -ClassName Win32_ComputerSystem
     if ($cs.PartOfDomain -ne $true) { throw "Host is not domain-joined" }
-    if ($cs.Domain -ne "{{ domain_name }}") { throw "Host domain mismatch" }
+    if ($cs.Domain -ne "{{ domain_name }}") { throw "Domain mismatch: expected {{ domain_name }}, got $($cs.Domain)" }
   changed_when: false
   tags: [prereqs]
 
-- name: Install required Windows Features
+# -----------------------------------------------
+# 2. Install Windows Features (single transaction)
+# -----------------------------------------------
+- name: Install all required Windows Features for MECM
   ansible.windows.win_feature:
-    name: "{{ item }}"
+    name: "{{ mecm_required_features }}"
     state: present
     include_management_tools: true
-  loop: "{{ mecm_required_features }}"
   register: feature_install
   notify: restart iis
   tags: [prereqs]
 
-- name: Disable Internet Explorer Enhanced Security Configuration (Admin)
+- name: Reboot if Windows Features required it
+  ansible.windows.win_reboot:
+    reboot_timeout: 600
+  when: feature_install.reboot_required | default(false)
+  tags: [prereqs]
+
+# -----------------------------------------------
+# 3. Disable IE Enhanced Security Configuration
+# -----------------------------------------------
+- name: Disable IE ESC (Admin)
   ansible.windows.win_regedit:
     path: HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}
     name: IsInstalled
@@ -36,7 +67,7 @@
     type: dword
   tags: [prereqs]
 
-- name: Disable Internet Explorer Enhanced Security Configuration (User)
+- name: Disable IE ESC (User)
   ansible.windows.win_regedit:
     path: HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A8-37EF-4b3f-8CFC-4F3A74704073}
     name: IsInstalled
@@ -44,7 +75,10 @@
     type: dword
   tags: [prereqs]
 
-- name: Create MECM firewall rules
+# -----------------------------------------------
+# 4. Firewall rules
+# -----------------------------------------------
+- name: Create MECM / SQL / WSUS firewall rules
   ansible.windows.win_firewall_rule:
     name: "{{ item.name }}"
     localport: "{{ item.localport }}"
@@ -55,13 +89,122 @@
     state: present
     enabled: true
   loop: "{{ mecm_firewall_rules }}"
+  loop_control:
+    label: "{{ item.name }}"
   tags: [prereqs]
 
+# -----------------------------------------------
+# 5. Verify .NET Framework 4.8+
+# -----------------------------------------------
+- name: Verify .NET Framework 4.8 or later is present
+  ansible.windows.win_reg_stat:
+    path: HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full
+    name: Release
+  register: dotnet_release
+  tags: [prereqs]
+
+- name: Assert .NET Framework version meets MECM requirement
+  ansible.builtin.assert:
+    that:
+      - dotnet_release.exists
+      - dotnet_release.value | int >= dotnet_minimum_release
+    fail_msg: >-
+      MECM 2403+ requires .NET Framework 4.8 (release >= {{ dotnet_minimum_release }}).
+      Detected: {{ dotnet_release.value | default('not found') }}.
+  tags: [prereqs]
+
+# -----------------------------------------------
+# 6. Windows ADK + WinPE add-on
+# -----------------------------------------------
+- name: Check if Windows ADK is already installed
+  ansible.windows.win_reg_stat:
+    path: HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows Kits\Installed Roots
+    name: KitsRoot10
+  register: adk_check
+  tags: [prereqs]
+
+- name: Install Windows ADK (Deployment Tools + USMT)
+  ansible.windows.win_shell: |
+    & "{{ adk_media_unc }}\adksetup.exe" /quiet /norestart `
+      /installpath "{{ adk_install_path }}" `
+      /features OptionId.DeploymentTools OptionId.UserStateMigrationTool
+  args:
+    creates: "{{ adk_install_path }}\\Assessment and Deployment Kit\\Deployment Tools"
+  when: not adk_check.exists
+  register: adk_install
+  tags: [prereqs]
+
+- name: Check if ADK WinPE add-on is already installed
+  ansible.windows.win_stat:
+    path: "{{ adk_install_path }}\\Assessment and Deployment Kit\\Windows Preinstallation Environment"
+  register: adk_winpe_check
+  tags: [prereqs]
+
+- name: Install Windows ADK WinPE add-on
+  ansible.windows.win_shell: |
+    & "{{ adk_winpe_media_unc }}\adkwinpesetup.exe" /quiet /norestart `
+      /installpath "{{ adk_install_path }}"
+  args:
+    creates: "{{ adk_install_path }}\\Assessment and Deployment Kit\\Windows Preinstallation Environment\\amd64"
+  when: not adk_winpe_check.stat.exists
+  tags: [prereqs]
+
+# -----------------------------------------------
+# 7. Microsoft ODBC Driver 18 for SQL Server
+# -----------------------------------------------
+- name: Check if ODBC Driver 18 is installed
+  ansible.windows.win_shell: |
+    $driver = Get-ItemProperty "HKLM:\SOFTWARE\ODBC\ODBCINST.INI\ODBC Driver 18 for SQL Server" -ErrorAction SilentlyContinue
+    if ($driver) { $driver.DriverODBCVer } else { "not_installed" }
+  register: odbc_check
+  changed_when: false
+  tags: [prereqs]
+
+- name: Install Microsoft ODBC Driver 18 for SQL Server
+  ansible.windows.win_shell: |
+    msiexec /i "{{ odbc_driver_msi_unc }}" /quiet /norestart IACCEPTMSODBCSQLLICENSETERMS=YES
+  when: "'not_installed' in odbc_check.stdout"
+  tags: [prereqs]
+
+# -----------------------------------------------
+# 8. Visual C++ 2015-2022 Redistributable
+# -----------------------------------------------
+- name: Check if VC++ 2015-2022 x64 is installed
+  ansible.windows.win_reg_stat:
+    path: HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\X64
+    name: Installed
+  register: vcredist_x64_check
+  tags: [prereqs]
+
+- name: Install Visual C++ 2015-2022 Redistributable (x64)
+  ansible.windows.win_shell: |
+    & "{{ vcredist_x64_unc }}" /install /quiet /norestart
+  when: not vcredist_x64_check.exists or vcredist_x64_check.value != 1
+  tags: [prereqs]
+
+- name: Check if VC++ 2015-2022 x86 is installed
+  ansible.windows.win_reg_stat:
+    path: HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\X86
+    name: Installed
+  register: vcredist_x86_check
+  tags: [prereqs]
+
+- name: Install Visual C++ 2015-2022 Redistributable (x86)
+  ansible.windows.win_shell: |
+    & "{{ vcredist_x86_unc }}" /install /quiet /norestart
+  when: not vcredist_x86_check.exists or vcredist_x86_check.value != 1
+  tags: [prereqs]
+
+# -----------------------------------------------
+# 9. AD Schema extension (idempotent)
+# -----------------------------------------------
 - name: Check if AD schema has already been extended for MECM
   ansible.windows.win_shell: |
-    $schema = [directoryservices.activedirectory.activedirectoryschema]::GetCurrentSchema()
-    $attr = $schema.FindClass("mSSMSSite")
-    if ($attr) { "extended" } else { "not_extended" }
+    try {
+      $schema = [System.DirectoryServices.ActiveDirectory.ActiveDirectorySchema]::GetCurrentSchema()
+      $class = $schema.FindClass("mSSMSSite")
+      if ($class) { "extended" } else { "not_extended" }
+    } catch { "not_extended" }
   register: schema_check
   changed_when: false
   failed_when: false
@@ -75,28 +218,30 @@
   when: schema_check.stdout | trim != "extended"
   tags: [prereqs]
 
-- name: Extend Active Directory schema for MECM (idempotent)
+- name: Extend Active Directory schema for MECM
   ansible.windows.win_shell: |
     C:\Temp\extadsch.exe
-  args:
-    creates: C:\Temp\extadsch.log
+    Start-Sleep -Seconds 5
   when: schema_check.stdout | trim != "extended"
   register: schema_extend
   tags: [prereqs]
 
-- name: Verify schema extension log
+- name: Verify schema extension succeeded
   ansible.windows.win_shell: |
     if (Select-String -Path C:\Temp\extadsch.log -Pattern "Successfully extended the Active Directory schema" -Quiet) {
       "success"
     } else {
       Get-Content C:\Temp\extadsch.log -Tail 50
-      throw "Schema extension failed - see log above"
+      throw "Schema extension failed — see log output above"
     }
   when: schema_extend is changed
   changed_when: false
   tags: [prereqs]
 
-- name: Ensure System Management container exists
+# -----------------------------------------------
+# 10. System Management container + delegation
+# -----------------------------------------------
+- name: Ensure System Management container exists in AD
   microsoft.ad.object:
     name: "System Management"
     path: "CN=System,DC={{ domain_name.split('.') | join(',DC=') }}"
@@ -105,7 +250,22 @@
   register: sysmgmt_container
   tags: [prereqs]
 
-- name: Delegate Full Control on System Management container to site server computer account
+- name: Check if delegation ACE already exists
+  ansible.windows.win_shell: |
+    Import-Module ActiveDirectory
+    $container = "CN=System Management,CN=System,DC={{ domain_name.split('.') | join(',DC=') }}"
+    $computer = "{{ domain_netbios }}\{{ inventory_hostname_short }}$"
+    $acl = Get-Acl -Path "AD:$container"
+    $existing = $acl.Access | Where-Object {
+      $_.IdentityReference -eq $computer -and
+      $_.ActiveDirectoryRights -band [System.DirectoryServices.ActiveDirectoryRights]::GenericAll
+    }
+    if ($existing) { "delegated" } else { "not_delegated" }
+  register: delegation_check
+  changed_when: false
+  tags: [prereqs]
+
+- name: Delegate Full Control on System Management container to site server
   ansible.windows.win_shell: |
     Import-Module ActiveDirectory
     $container = "CN=System Management,CN=System,DC={{ domain_name.split('.') | join(',DC=') }}"
@@ -118,9 +278,12 @@
     $rule = New-Object System.DirectoryServices.ActiveDirectoryAccessRule($identity, $rights, $type, $inheritance)
     $acl.AddAccessRule($rule)
     Set-Acl -Path "AD:$container" -AclObject $acl
-  when: sysmgmt_container is changed or not system_management_container_created | default(false)
+  when: delegation_check.stdout | trim != "delegated"
   tags: [prereqs]
 
+# -----------------------------------------------
+# 11. Working directories
+# -----------------------------------------------
 - name: Create working directories
   ansible.windows.win_file:
     path: "{{ item }}"

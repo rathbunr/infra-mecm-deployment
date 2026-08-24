@@ -1,14 +1,27 @@
 ---
+# ============================================================================
+# MECM Standalone Primary Site — Full Unattended Installation
+# ============================================================================
+# Control plane : Ansible Automation Platform 2.7 (containerized EE)
+# Connection    : WinRM/HTTPS (5986) + Kerberos
+# Target OS     : Windows Server 2025 (domain-joined)
+# SQL           : SQL Server 2022 Standard (local, default instance)
+# WSUS          : Update Services role backed by local SQL (not WID)
+# PKI           : Enterprise subordinate CA — no self-signed certificates
+# Site type     : Standalone Primary Site
+# ============================================================================
+# Connection variables (ansible_connection, ansible_winrm_transport, etc.)
+# are defined once in inventory/hosts.yml and are NOT duplicated here.
+# ============================================================================
+
 - name: Fully automated standalone MECM Current Branch primary site installation
   hosts: mecm_servers
   gather_facts: true
-  vars:
-    ansible_connection: winrm
-    ansible_winrm_transport: kerberos
-    ansible_port: 5986
-    ansible_winrm_server_cert_validation: ignore
 
   pre_tasks:
+    # ------------------------------------------------------------------
+    # Gate: make sure every AAP Custom Credential Type injected its vars.
+    # ------------------------------------------------------------------
     - name: Assert required credential variables are present
       ansible.builtin.assert:
         that:
@@ -18,11 +31,15 @@
           - sccm_naa_password is defined
           - sql_sa_password is defined
           - ca_server is defined
+          - ca_name is defined
           - ca_template_name is defined
           - domain_admin_user is defined
           - domain_admin_password is defined
           - domain_name is defined
-        fail_msg: "One or more required AAP credential variables are missing. Check Custom Credential Types."
+        fail_msg: >-
+          One or more required AAP credential variables are missing.
+          Verify that all three Custom Credential Types (MECM Service Accounts,
+          AD Certificate Services, Domain Admin) are attached to the Job Template.
       tags: [always]
 
   roles:

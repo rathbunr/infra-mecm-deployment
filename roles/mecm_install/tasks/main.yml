@@ -1,4 +1,8 @@
 ---
+# ============================================================================
+# mecm_install/tasks — Stage media, template INI, run setup.exe /script
+# ============================================================================
+
 - name: Check if MECM is already installed
   ansible.windows.win_reg_stat:
     path: HKLM:\SOFTWARE\Microsoft\SMS\Setup
@@ -6,13 +10,13 @@
   register: mecm_reg
   tags: [mecm]
 
-- name: Stage MECM prerequisite files
+- name: Stage MECM prerequisite files (redistributables)
   ansible.windows.win_shell: |
     if (-not (Test-Path "{{ mecm_prereq_path }}")) {
       New-Item -Path "{{ mecm_prereq_path }}" -ItemType Directory -Force | Out-Null
     }
     robocopy "{{ mecm_prereq_unc }}" "{{ mecm_prereq_path }}" /E /NFL /NDL /NJH /NJS /nc /ns /np
-    if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit $LASTEXITCODE" }
+    if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
   args:
     creates: "{{ mecm_prereq_path }}\\redist"
   when: not mecm_reg.exists
@@ -38,15 +42,13 @@
   rescue:
     - name: Capture MECM setup log on failure
       ansible.windows.win_shell: |
-        if (Test-Path "C:\ConfigMgrSetup.log") {
-          Get-Content "C:\ConfigMgrSetup.log" -Tail 200
-        } else {
-          "ConfigMgrSetup.log not found"
-        }
+        if (Test-Path "{{ mecm_log_file }}") {
+          Get-Content "{{ mecm_log_file }}" -Tail 200
+        } else { "ConfigMgrSetup.log not found at {{ mecm_log_file }}" }
       register: setup_log
       changed_when: false
 
-    - name: Fail with setup log
+    - name: Fail with setup log excerpt
       ansible.builtin.fail:
         msg: |
           MECM setup.exe failed.
@@ -56,17 +58,17 @@
   when: not mecm_reg.exists
   tags: [mecm]
 
-- name: Wait for SMS_EXECUTIVE service
+- name: Wait for SMS_EXECUTIVE service to start
   ansible.windows.win_service:
     name: SMS_EXECUTIVE
     state: started
   retries: 60
   delay: 15
-  when: mecm_setup is changed
+  when: mecm_setup is defined and mecm_setup is changed
   tags: [mecm]
 
 - name: Debug MECM setup result
   ansible.builtin.debug:
     var: mecm_setup
-  when: mecm_setup is defined
+  when: mecm_setup is defined and mecm_setup is changed
   tags: [mecm]

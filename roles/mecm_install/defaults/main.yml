@@ -1,4 +1,5 @@
 ---
 mecm_setup_ini: "C:\\Temp\\mecm_setup.ini"
 mecm_setup_exe: "{{ mecm_media_unc }}\\SMSSETUP\\BIN\\X64\\setup.exe"
-mecm_log_dir: "C:\\ConfigMgrSetup.log"
+mecm_log_file: "C:\\ConfigMgrSetup.log"
+mecm_product_id: "EVAL"

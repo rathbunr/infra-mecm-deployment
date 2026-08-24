@@ -1,113 +1,98 @@
 ---
-# Windows features required by MECM Current Branch (standalone primary)
+# ============================================================================
+# prereqs/defaults — Windows Features, firewall rules, prerequisite paths
+# ============================================================================
+# Feature list matches Microsoft's published MECM Current Branch prerequisites
+# for a standalone primary site on Windows Server 2025.
+# Ref: https://learn.microsoft.com/en-us/intune/configmgr/core/plan-design/configs/site-and-site-system-prerequisites
+#
+# REMOVED (not in MS list / introduces attack surface):
+#   Web-DAV-Publishing   — MS: "Do not install WebDAV on site systems"
+#   Web-CGI              — not required; exposes CGI execution
+#   Web-AppInit          — not required
+#   Web-Lgcy-Mgmt-Console — IIS 6 legacy; not needed on Server 2025
+#   Web-Lgcy-Scripting    — IIS 6 legacy; not needed on Server 2025
+# ============================================================================
+
 mecm_required_features:
+  # .NET Framework
   - NET-Framework-Core
   - NET-Framework-45-Features
   - NET-Framework-45-Core
   - NET-Framework-45-ASPNET
+  # Background Intelligent Transfer Service
   - BITS
   - BITS-IIS-Ext
+  # Remote Differential Compression
   - RDC
+  # Windows Process Activation Service
   - WAS
   - WAS-Process-Model
   - WAS-NET-Environment
   - WAS-Config-APIs
+  # IIS — Web Server core
   - Web-Server
   - Web-WebServer
+  # IIS — Common HTTP
   - Web-Common-Http
   - Web-Default-Doc
   - Web-Dir-Browsing
   - Web-Http-Errors
   - Web-Static-Content
   - Web-Http-Redirect
-  - Web-DAV-Publishing
+  # IIS — Health and Diagnostics
   - Web-Health
   - Web-Http-Logging
   - Web-Custom-Logging
   - Web-Log-Libraries
   - Web-Request-Monitor
   - Web-Http-Tracing
+  # IIS — Performance
   - Web-Performance
   - Web-Stat-Compression
   - Web-Dyn-Compression
+  # IIS — Security
   - Web-Security
   - Web-Filtering
   - Web-Basic-Auth
   - Web-Windows-Auth
   - Web-Url-Auth
   - Web-IP-Security
+  # IIS — Application Development
   - Web-App-Dev
   - Web-Net-Ext
   - Web-Net-Ext45
-  - Web-AppInit
   - Web-ASP
   - Web-Asp-Net
   - Web-Asp-Net45
-  - Web-CGI
   - Web-ISAPI-Ext
   - Web-ISAPI-Filter
   - Web-Includes
   - Web-WebSockets
+  # IIS — Management Tools
   - Web-Mgmt-Tools
   - Web-Mgmt-Console
   - Web-Mgmt-Compat
   - Web-Metabase
-  - Web-Lgcy-Mgmt-Console
-  - Web-Lgcy-Scripting
   - Web-WMI
   - Web-Scripting-Tools
+  # RSAT — Active Directory
   - RSAT-AD-Tools
   - RSAT-AD-PowerShell
   - RSAT-ADDS
   - RSAT-AD-AdminCenter
 
-# Firewall rules for MECM + SQL + WSUS
 mecm_firewall_rules:
-  - name: "SQL Server (TCP 1433)"
-    localport: 1433
-    protocol: tcp
-    direction: in
-    action: allow
-    profiles: domain,private
-  - name: "SMB (TCP 445)"
-    localport: 445
-    protocol: tcp
-    direction: in
-    action: allow
-    profiles: domain,private
-  - name: "MECM HTTP (TCP 80)"
-    localport: 80
-    protocol: tcp
-    direction: in
-    action: allow
-    profiles: domain,private
-  - name: "MECM HTTPS (TCP 443)"
-    localport: 443
-    protocol: tcp
-    direction: in
-    action: allow
-    profiles: domain,private
-  - name: "MECM Client Notification (TCP 10123)"
-    localport: 10123
-    protocol: tcp
-    direction: in
-    action: allow
-    profiles: domain,private
-  - name: "MECM WSUS HTTP (TCP 8530)"
-    localport: 8530
-    protocol: tcp
-    direction: in
-    action: allow
-    profiles: domain,private
-  - name: "MECM WSUS HTTPS (TCP 8531)"
-    localport: 8531
-    protocol: tcp
-    direction: in
-    action: allow
-    profiles: domain,private
-  - name: "MECM PXE (UDP 4011)"
-    localport: 4011
-    protocol: udp
-    direction: in
-    action: allow
-    profiles: domain,private
+  - { name: "SQL Server (TCP 1433)",             localport: 1433,  protocol: tcp, direction: in, action: allow, profiles: "domain,private" }
+  - { name: "SMB (TCP 445)",                     localport: 445,   protocol: tcp, direction: in, action: allow, profiles: "domain,private" }
+  - { name: "MECM HTTP (TCP 80)",                localport: 80,    protocol: tcp, direction: in, action: allow, profiles: "domain,private" }
+  - { name: "MECM HTTPS (TCP 443)",              localport: 443,   protocol: tcp, direction: in, action: allow, profiles: "domain,private" }
+  - { name: "MECM Client Notification (TCP 10123)", localport: 10123, protocol: tcp, direction: in, action: allow, profiles: "domain,private" }
+  - { name: "MECM WSUS HTTP (TCP 8530)",         localport: 8530,  protocol: tcp, direction: in, action: allow, profiles: "domain,private" }
+  - { name: "MECM WSUS HTTPS (TCP 8531)",        localport: 8531,  protocol: tcp, direction: in, action: allow, profiles: "domain,private" }
+  - { name: "MECM PXE (UDP 4011)",               localport: 4011,  protocol: udp, direction: in, action: allow, profiles: "domain,private" }
+
+adk_install_path: "C:\\Program Files (x86)\\Windows Kits\\10"
+
+# Minimum .NET release: 528040 = .NET 4.8 GA
+dotnet_minimum_release: 528040

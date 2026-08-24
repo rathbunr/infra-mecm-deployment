@@ -1,5 +1,9 @@
 ---
-- name: Check if SQL Server is already installed
+# ============================================================================
+# sql_install/tasks — Unattended SQL Server 2022 Standard installation
+# ============================================================================
+
+- name: Check if SQL Server service exists
   ansible.windows.win_service:
     name: MSSQLSERVER
   register: sql_service
@@ -10,7 +14,8 @@
   ansible.windows.win_template:
     src: ConfigurationFile.ini.j2
     dest: "{{ sql_config_file }}"
-  when: sql_service.state is not defined or sql_service.state != "running"
+  when: not (sql_service.exists | default(false))
+  no_log: true
   tags: [sql]
 
 - name: Install SQL Server 2022 (unattended)
@@ -18,7 +23,7 @@
     & "{{ sql_setup_exe }}" /ConfigurationFile="{{ sql_config_file }}"
   args:
     creates: "C:\\Program Files\\Microsoft SQL Server\\MSSQL16.MSSQLSERVER\\MSSQL\\Binn\\sqlservr.exe"
-  when: sql_service.state is not defined or sql_service.state != "running"
+  when: not (sql_service.exists | default(false))
   register: sql_install
   tags: [sql]
 
@@ -49,16 +54,26 @@
   notify: restart sql server
   tags: [sql]
 
-- name: Set SQL Server min and max memory
+- name: Set SQL Server min and max memory (idempotent)
   ansible.windows.win_shell: |
-    $query = @"
-    EXEC sp_configure 'show advanced options', 1;
-    RECONFIGURE;
-    EXEC sp_configure 'min server memory', {{ sql_min_server_memory_mb }};
-    EXEC sp_configure 'max server memory', {{ sql_max_server_memory_mb }};
-    RECONFIGURE;
-    "@
-    Invoke-Sqlcmd -ServerInstance "localhost" -Query $query -TrustServerCertificate
+    $current = Invoke-Sqlcmd -ServerInstance "localhost" -TrustServerCertificate -Query "
+      SELECT name, CAST(value_in_use AS INT) AS val
+      FROM sys.configurations
+      WHERE name IN ('min server memory (MB)', 'max server memory (MB)')
+    "
+    $minMem = ($current | Where-Object { $_.name -eq 'min server memory (MB)' }).val
+    $maxMem = ($current | Where-Object { $_.name -eq 'max server memory (MB)' }).val
+    if ($minMem -ne {{ sql_min_server_memory_mb }} -or $maxMem -ne {{ sql_max_server_memory_mb }}) {
+      Invoke-Sqlcmd -ServerInstance "localhost" -TrustServerCertificate -Query "
+        EXEC sp_configure 'show advanced options', 1; RECONFIGURE;
+        EXEC sp_configure 'min server memory', {{ sql_min_server_memory_mb }};
+        EXEC sp_configure 'max server memory', {{ sql_max_server_memory_mb }};
+        RECONFIGURE;
+      "
+      "changed"
+    } else { "no_change" }
+  register: sql_memory
+  changed_when: "'changed' in sql_memory.stdout"
   tags: [sql]
 
 - name: Ensure SQL Server firewall rule exists
@@ -73,8 +88,15 @@
     enabled: true
   tags: [sql]
 
+- name: Remove SQL ConfigurationFile.ini (contains SA password)
+  ansible.windows.win_file:
+    path: "{{ sql_config_file }}"
+    state: absent
+  when: sql_service.exists | default(false) or sql_install is changed
+  tags: [sql]
+
 - name: Debug SQL install result
   ansible.builtin.debug:
     var: sql_install
-  when: sql_install is defined
+  when: sql_install is defined and sql_install is changed
   tags: [sql]

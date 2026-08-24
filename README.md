@@ -4,15 +4,15 @@ Production-quality, fully unattended installation of a **standalone primary site
 
 ## Architecture Summary
 
-| Component              | Details                                                                 |
-|------------------------|-------------------------------------------------------------------------|
-| Control plane          | Ansible Automation Platform 2.7 (containerized Execution Environments) |
-| Connection             | WinRM over HTTPS (5986) + Kerberos                                      |
-| Target OS              | Windows Server 2025 (domain-joined)                                     |
-| SQL                    | SQL Server 2022 Standard (local, default instance)                      |
-| WSUS                   | Update Services role using local SQL (not WID)                          |
-| Certificates           | Enterprise subordinate CA (no self-signed)                              |
-| Site type              | Standalone Primary Site                                                 |
+| Component     | Details                                                                |
+| ------------- | ---------------------------------------------------------------------- |
+| Control plane | Ansible Automation Platform 2.7 (containerized Execution Environments) |
+| Connection    | WinRM over HTTPS (5986) + Kerberos                                     |
+| Target OS     | Windows Server 2025 (domain-joined)                                    |
+| SQL           | SQL Server 2022 Standard (local, default instance)                     |
+| WSUS          | Update Services role using local SQL (not WID)                         |
+| Certificates  | Enterprise subordinate CA (no self-signed)                             |
+| Site type     | Standalone Primary Site                                                |
 
 ## AAP Custom Credential Types
 
@@ -69,12 +69,16 @@ extra_vars:
 fields:
   - id: ca_server
     type: string
-    label: Enterprise CA Server FQDN
+    label: Enterprise CA Server FQDN (e.g. ca01.example.com)
+  - id: ca_name
+    type: string
+    label: CA Common Name (e.g. Contoso Issuing CA 01) — NOT the hostname
   - id: ca_template_name
     type: string
     label: Certificate Template Name (e.g. WebServer or custom MECM template)
 required:
   - ca_server
+  - ca_name
   - ca_template_name
 ```
 
@@ -83,6 +87,7 @@ required:
 ```yaml
 extra_vars:
   ca_server: "{{ ca_server }}"
+  ca_name: "{{ ca_name }}"
   ca_template_name: "{{ ca_template_name }}"
 ```
 
@@ -123,93 +128,95 @@ extra_vars:
 
 ## Inventory & Variables
 
-- `inventory/hosts.yml` – define the target host and connection settings.
-- `inventory/group_vars/mecm_servers.yml` – all site-specific values (site code, media UNC paths, SQL directories, boundary groups, etc.).
+- `inventory/hosts.yml` – target host and connection settings.
+- `inventory/group_vars/mecm_servers.yml` – all site-specific values.
 
 **Critical variables you must set before launch:**
 
-| Variable              | Description                                      |
-|-----------------------|--------------------------------------------------|
-| `mecm_site_code`      | 3-character site code (e.g. P01)                 |
-| `mecm_site_name`      | Friendly site name                               |
-| `sql_media_unc`       | UNC path to SQL Server 2022 media                |
-| `mecm_media_unc`      | UNC path to MECM Current Branch baseline media   |
-| `mecm_prereq_unc`     | UNC path to MECM redistributable prerequisites   |
-| `domain_name`         | AD DNS domain                                    |
-| `mecm_boundary_groups`| List of boundary groups + AD sites               |
+| Variable               | Description                                                      |
+| ---------------------- | ---------------------------------------------------------------- |
+| `mecm_site_code`       | 3-character site code (e.g. P01)                                 |
+| `mecm_site_name`       | Friendly site name                                               |
+| `mecm_product_id`      | Product key or `EVAL` for evaluation                             |
+| `sql_media_unc`        | UNC path to SQL Server 2022 media                                |
+| `mecm_media_unc`       | UNC path to MECM Current Branch baseline media                   |
+| `mecm_prereq_unc`      | UNC path to MECM redistributable prerequisites                   |
+| `adk_media_unc`        | UNC path to Windows ADK installer directory                      |
+| `adk_winpe_media_unc`  | UNC path to Windows ADK WinPE add-on installer directory         |
+| `odbc_driver_msi_unc`  | UNC path to `msodbcsql18.msi` (>= 18.4.1.1)                     |
+| `vcredist_x64_unc`     | UNC path to VC++ 2015-2022 Redistributable (x64)                |
+| `vcredist_x86_unc`     | UNC path to VC++ 2015-2022 Redistributable (x86)                |
+| `domain_name`          | AD DNS domain                                                    |
+| `domain_netbios`       | NetBIOS domain name                                              |
+| `mecm_boundary_groups` | List of boundary groups + AD sites                               |
+
+## Prerequisite Media Staging
+
+Stage these on a UNC share accessible by the install account:
+
+1. **SQL Server 2022 Standard** — full media (ISO extracted)
+2. **MECM Current Branch baseline** — extracted from ISO or VLSC
+3. **MECM redistributable prerequisites** — via `setupdl.exe` or manual download
+4. **Windows ADK** — `adksetup.exe` and payload
+5. **Windows ADK WinPE add-on** — separate download
+6. **Microsoft ODBC Driver 18 for SQL Server** — `msodbcsql18.msi` (x64) version >= 18.4.1.1
+7. **Visual C++ 2015-2022 Redistributable** — both `vc_redist.x64.exe` and `vc_redist.x86.exe`
 
 ## Execution Environment
 
-Build the EE from the provided `execution-environment.yml`:
-
 ```bash
 ansible-builder build -f execution-environment.yml -t mecm-ee:latest
-# Push to your private automation hub / registry
+podman push mecm-ee:latest <registry>/mecm-ee:latest
 ```
 
 ## Operator Guide – AAP 2.7
 
-1. **Import Project**
-   - Projects → Add → Source Control (Git) or Manual.
-   - Point at this repository / upload the `mecm-standalone` directory.
+1. **Import Project** — Projects → Add → Git or Manual; point at this repo.
+2. **Create Credentials** — instances of the three Custom Credential Types above, plus a Machine credential for Kerberos.
+3. **Build / Publish EE** — `ansible-builder` with the supplied `execution-environment.yml`.
+4. **Inventory** — create inventory, add the Windows host, set `group_vars`.
+5. **Job Template** — playbook `site.yml`, attach all four credentials, select the EE.
+6. **Launch** — use tags (`prereqs`, `certs`, `sql`, `wsus`, `mecm`, `postconfig`) to re-run phases.
 
-2. **Create Credentials**
-   - Create instances of the three Custom Credential Types defined above.
-   - Also create a standard **Machine** credential (or use the domain service account) that can authenticate via Kerberos to the target.
+## Prerequisite Installation Sequence
 
-3. **Build / Publish Execution Environment**
-   - Use the supplied `execution-environment.yml`.
-   - Publish to Automation Hub or a private registry.
-   - Create an Execution Environment object in AAP that points at the image.
+| Step | Phase        | What it does                                            |
+| ---- | ------------ | ------------------------------------------------------- |
+| 1    | `prereqs`    | Validate connectivity, DNS, domain membership           |
+| 2    | `prereqs`    | Install Windows Features (single transaction)           |
+| 3    | `prereqs`    | Disable IE ESC, configure firewall rules                |
+| 4    | `prereqs`    | Verify .NET Framework 4.8+                              |
+| 5    | `prereqs`    | Install Windows ADK + WinPE add-on                      |
+| 6    | `prereqs`    | Install Microsoft ODBC Driver 18 (>= 18.4.1.1)         |
+| 7    | `prereqs`    | Install Visual C++ 2015-2022 (x64 + x86)               |
+| 8    | `prereqs`    | Extend AD schema (`extadsch.exe`)                       |
+| 9    | `prereqs`    | Create System Management container + delegate           |
+| 10   | `certs`      | Request PKI certificate (with SAN) from enterprise CA   |
+| 11   | `certs`      | Bind certificate to IIS (HTTPS 443)                     |
+| 12   | `sql`        | Install SQL Server 2022 unattended                      |
+| 13   | `sql`        | Post-config: TCP/IP, memory, firewall, cleanup INI      |
+| 14   | `wsus`       | Install WSUS role with SQL backend                      |
+| 15   | `wsus`       | Run `wsusutil.exe postinstall`                          |
+| 16   | `mecm`       | Stage prereqs, template INI, `setup.exe /script`        |
+| 17   | `postconfig` | Configure MP, DP, SUP, NAA, boundaries, client push    |
 
-4. **Inventory**
-   - Create an inventory and add the Windows host.
-   - Attach the `group_vars` values (or use an inventory source that populates them).
+## Required Permissions
 
-5. **Job Template**
-   - Name: `MECM Standalone Primary Install`
-   - Inventory: the inventory containing the target.
-   - Project: the imported project.
-   - Playbook: `site.yml`
-   - Execution Environment: the MECM EE.
-   - Credentials: Machine + the three Custom Credential Types.
-   - Extra variables (optional overrides).
-   - Enable **Privilege Escalation** if required by your WinRM configuration (usually not needed with Kerberos + domain admin rights).
-
-6. **Launch**
-   - Run the job template.
-   - Use tags (`prereqs`, `certs`, `sql`, `wsus`, `mecm`, `postconfig`) to re-run individual phases if needed.
-   - Monitor the job output; on MECM setup failure the playbook automatically surfaces the last 200 lines of `C:\ConfigMgrSetup.log`.
-
-## Idempotency & Safety
-
-- Every role uses `creates:`, registry checks, `win_stat`, or `when:` guards.
-- Schema extension and System Management container creation are performed only when missing.
-- SQL and MECM setup are skipped when the respective services / registry keys already exist.
-- Handlers restart only the services that actually need it.
-- Secrets are never logged (`no_log: true` on sensitive tasks).
-
-## Post-Installation Notes
-
-- After the playbook completes, open the Configuration Manager console on the site server (or a remote admin workstation) and verify:
-  - Management Point, Distribution Point, and Software Update Point roles.
-  - Certificate binding on the Default Web Site.
-  - Network Access Account.
-  - Boundary Groups.
-  - Client Push settings.
-- Review logs:
-  - `C:\ConfigMgrSetup.log`
-  - `%ProgramFiles%\Microsoft Configuration Manager\Logs\*.log`
-  - SQL setup logs under the SQL media folder / `%ProgramFiles%\Microsoft SQL Server\...\Setup Bootstrap\Log`
+- **Local Administrator** on the site server
+- **Schema Admin + Enterprise Admin** for the one-time AD schema extension
+- **Full Control** on the System Management container (playbook creates this)
+- **sysadmin** on the SQL instance (granted via ConfigurationFile.ini)
 
 ## References
 
-- Microsoft Docs – MECM Setup command-line options and unattended INI reference
-- Microsoft Docs – SQL Server ConfigurationFile.ini
-- Microsoft Docs – WSUS post-install with SQL
-- Red Hat – Ansible Automation Platform 2.7 Execution Environments
-- ansible.windows / microsoft.ad collection documentation
+- [MECM prerequisites for installing sites](https://learn.microsoft.com/en-us/intune/configmgr/core/servers/deploy/install/prerequisites-for-installing-sites)
+- [Site and site system prerequisites](https://learn.microsoft.com/en-us/intune/configmgr/core/plan-design/configs/site-and-site-system-prerequisites)
+- [Prerequisite checks](https://learn.microsoft.com/en-us/intune/configmgr/core/servers/deploy/install/list-of-prerequisite-checks)
+- [Unattended setup script reference](https://learn.microsoft.com/en-us/intune/configmgr/core/servers/deploy/install/command-line-script-file)
+- [AAP 2.7 Execution Environments](https://docs.redhat.com/en/documentation/red_hat_ansible_automation_platform/2.7/)
+- [ansible.windows collection](https://docs.ansible.com/ansible/latest/collections/ansible/windows/)
+- [microsoft.ad collection](https://docs.ansible.com/ansible/latest/collections/microsoft/ad/)
 
 ---
 
-**Disclaimer**: This playbook follows official Microsoft and Red Hat guidance. Always test in a non-production lab before production use. Ensure the install account has the necessary rights (local admin on the site server, schema admin / enterprise admin for the one-time schema extension, permissions on the System Management container, etc.).
+**Disclaimer**: Always test in a non-production lab before production use.

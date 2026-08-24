@@ -1,5 +1,29 @@
 ---
-- name: Generate certificate request INF file
+# ============================================================================
+# certificates/tasks — Request, retrieve, and bind PKI certificate for MECM
+# ============================================================================
+
+- name: Check if a valid MECM site system certificate already exists
+  ansible.windows.win_shell: |
+    $cert = Get-ChildItem -Path Cert:\LocalMachine\My |
+            Where-Object { $_.FriendlyName -eq "{{ iis_cert_friendly_name }}" } |
+            Where-Object { $_.NotAfter -gt (Get-Date).AddDays(30) } |
+            Sort-Object NotBefore -Descending |
+            Select-Object -First 1
+    if ($cert) { $cert.Thumbprint } else { "not_found" }
+  register: existing_cert
+  changed_when: false
+  tags: [certs]
+
+- name: Set certificate thumbprint fact (existing cert)
+  ansible.builtin.set_fact:
+    mecm_iis_cert_thumbprint: "{{ existing_cert.stdout | trim }}"
+  when: existing_cert.stdout | trim != "not_found"
+  tags: [certs]
+
+# --- Certificate request + enrollment (skipped if cert exists) ---
+
+- name: Generate certificate request INF file (includes SAN)
   ansible.windows.win_copy:
     dest: "{{ cert_request_inf }}"
     content: |
@@ -24,6 +48,12 @@
 
       [EnhancedKeyUsageExtension]
       OID=1.3.6.1.5.5.7.3.1
+
+      [Extensions]
+      2.5.29.17 = "{text}"
+      _continue_ = "dns={{ inventory_hostname }}&"
+      _continue_ = "dns={{ inventory_hostname_short }}&"
+  when: existing_cert.stdout | trim == "not_found"
   tags: [certs]
 
 - name: Create certificate request
@@ -31,48 +61,58 @@
     certreq -new "{{ cert_request_inf }}" "{{ cert_request_req }}"
   args:
     creates: "{{ cert_request_req }}"
+  when: existing_cert.stdout | trim == "not_found"
   tags: [certs]
 
 - name: Submit certificate request to enterprise CA
   ansible.windows.win_shell: |
-    certreq -submit -config "{{ ca_server }}\{{ ca_server.split('.')[0] }}" -attrib "CertificateTemplate:{{ ca_template_name }}" "{{ cert_request_req }}" "{{ cert_request_cer }}"
+    certreq -submit -config "{{ ca_server }}\{{ ca_name }}" `
+      -attrib "CertificateTemplate:{{ ca_template_name }}" `
+      "{{ cert_request_req }}" "{{ cert_request_cer }}"
   register: cert_submit
   failed_when: >
     cert_submit.rc != 0 and
     ("Certificate request is pending" not in cert_submit.stdout) and
     ("Certificate retrieved" not in cert_submit.stdout)
+  when: existing_cert.stdout | trim == "not_found"
   tags: [certs]
 
 - name: Retrieve pending certificate if necessary
   ansible.windows.win_shell: |
-    certreq -retrieve -config "{{ ca_server }}\{{ ca_server.split('.')[0] }}" -attrib "CertificateTemplate:{{ ca_template_name }}" "{{ cert_request_req }}" "{{ cert_request_cer }}"
-  when: "'pending' in cert_submit.stdout | lower"
+    certreq -retrieve -config "{{ ca_server }}\{{ ca_name }}" `
+      "{{ cert_request_req }}" "{{ cert_request_cer }}"
+  when:
+    - existing_cert.stdout | trim == "not_found"
+    - cert_submit is defined
+    - "'pending' in (cert_submit.stdout | default('') | lower)"
   tags: [certs]
 
-- name: Accept and install the certificate into Local Machine\Personal
+- name: Accept and install the certificate
   ansible.windows.win_shell: |
     certreq -accept "{{ cert_request_cer }}"
-  register: cert_accept
+  when: existing_cert.stdout | trim == "not_found"
   tags: [certs]
 
-- name: Locate the installed certificate by friendly name and capture thumbprint
+- name: Locate newly installed certificate and capture thumbprint
   ansible.windows.win_shell: |
     $cert = Get-ChildItem -Path Cert:\LocalMachine\My |
             Where-Object { $_.FriendlyName -eq "{{ iis_cert_friendly_name }}" } |
             Sort-Object NotBefore -Descending |
             Select-Object -First 1
-    if (-not $cert) { throw "Certificate with friendly name '{{ iis_cert_friendly_name }}' not found" }
+    if (-not $cert) { throw "Certificate not found after enrollment" }
     $cert.Thumbprint
-  register: cert_thumbprint_raw
+  register: new_cert_thumbprint
   changed_when: false
+  when: existing_cert.stdout | trim == "not_found"
   tags: [certs]
 
-- name: Set certificate thumbprint fact
+- name: Set certificate thumbprint fact (new cert)
   ansible.builtin.set_fact:
-    mecm_iis_cert_thumbprint: "{{ cert_thumbprint_raw.stdout | trim }}"
+    mecm_iis_cert_thumbprint: "{{ new_cert_thumbprint.stdout | trim }}"
+  when: existing_cert.stdout | trim == "not_found"
   tags: [certs]
 
-- name: Debug certificate thumbprint
+- name: Display certificate thumbprint
   ansible.builtin.debug:
     msg: "IIS / Site System certificate thumbprint = {{ mecm_iis_cert_thumbprint }}"
   tags: [certs]
@@ -83,7 +123,7 @@
     $thumb = "{{ mecm_iis_cert_thumbprint }}"
     $binding = Get-WebBinding -Name "Default Web Site" -Protocol https -Port 443 -ErrorAction SilentlyContinue
     if ($binding) {
-      $binding.RemoveSslCertificate()
+      try { $binding.RemoveSslCertificate() } catch {}
       $binding.AddSslCertificate($thumb, "My")
     } else {
       New-WebBinding -Name "Default Web Site" -Protocol https -Port 443

@@ -1,5 +1,4 @@
 ---
-# Post-installation configuration defaults
 mecm_mp_https: true
 mecm_dp_https: true
 mecm_sup_use_ssl: true

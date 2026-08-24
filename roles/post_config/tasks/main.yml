@@ -1,17 +1,31 @@
 ---
-- name: Wait for Configuration Manager console / WMI provider readiness
+# ============================================================================
+# post_config/tasks — Configure MP, DP, SUP, NAA, boundaries, client push
+# ============================================================================
+# CRITICAL: Every win_shell block imports the ConfigMgr module and sets the
+# PSDrive.  Without this, all CM cmdlets throw CommandNotFoundException.
+# ============================================================================
+
+- name: Build ConfigMgr PowerShell preamble fact
+  ansible.builtin.set_fact:
+    _cm_preamble: |
+      $ErrorActionPreference = "Stop"
+      Import-Module "{{ mecm_install_directory }}\AdminConsole\bin\ConfigurationManager.psd1"
+      $SiteCode = "{{ mecm_site_code }}"
+      if (-not (Get-PSDrive -Name $SiteCode -ErrorAction SilentlyContinue)) {
+        New-PSDrive -Name $SiteCode -PSProvider CMSite -Root "{{ inventory_hostname }}" | Out-Null
+      }
+      Set-Location "${SiteCode}:"
+  tags: [postconfig]
+
+- name: Wait for SMS WMI provider to be ready
   ansible.windows.win_shell: |
-    $timeout = 600
-    $elapsed = 0
+    $timeout = 600; $elapsed = 0
     do {
       try {
         $null = Get-WmiObject -Namespace "root\SMS" -Class SMS_ProviderLocation -ErrorAction Stop
-        "ready"
-        break
-      } catch {
-        Start-Sleep -Seconds 15
-        $elapsed += 15
-      }
+        "ready"; break
+      } catch { Start-Sleep -Seconds 15; $elapsed += 15 }
     } while ($elapsed -lt $timeout)
     if ($elapsed -ge $timeout) { throw "SMS Provider not ready after $timeout seconds" }
   changed_when: false
@@ -19,63 +33,72 @@
 
 - name: Configure Management Point for HTTPS
   ansible.windows.win_shell: |
-    $SiteCode = "{{ mecm_site_code }}"
-    $MP = Get-CMManagementPoint -SiteCode $SiteCode -ErrorAction SilentlyContinue
-    if ($MP) {
-      Set-CMManagementPoint -SiteCode $SiteCode -ClientConnectionType InternetAndIntranet -AllowDeviceConnections $true -SslState 1
+    {{ _cm_preamble }}
+    $mp = Get-CMManagementPoint -SiteSystemServerName "{{ inventory_hostname }}" -SiteCode $SiteCode -ErrorAction SilentlyContinue
+    if ($mp) {
+      Set-CMManagementPoint -SiteSystemServerName "{{ inventory_hostname }}" -SiteCode $SiteCode `
+        -EnableSsl $true -ClientConnectionType InternetAndIntranet
       "updated"
-    } else {
-      "MP role already present or not yet discovered - ensure site system role is installed"
-    }
+    } else { "MP not found — verify site system role was installed by setup" }
   register: mp_config
   changed_when: "'updated' in mp_config.stdout"
   tags: [postconfig]
 
 - name: Configure Distribution Point for HTTPS
   ansible.windows.win_shell: |
-    $SiteCode = "{{ mecm_site_code }}"
-    $DP = Get-CMDistributionPoint -SiteCode $SiteCode -ErrorAction SilentlyContinue
-    if ($DP) {
-      Set-CMDistributionPoint -SiteCode $SiteCode -ClientConnectionType InternetAndIntranet -CertificateFlags 1
+    {{ _cm_preamble }}
+    $dp = Get-CMDistributionPoint -SiteSystemServerName "{{ inventory_hostname }}" -SiteCode $SiteCode -ErrorAction SilentlyContinue
+    if ($dp) {
+      Set-CMDistributionPoint -SiteSystemServerName "{{ inventory_hostname }}" -SiteCode $SiteCode `
+        -ClientConnectionType InternetAndIntranet
       "updated"
-    } else {
-      "DP role already present"
-    }
+    } else { "DP not found — verify site system role was installed by setup" }
   register: dp_config
   changed_when: "'updated' in dp_config.stdout"
   tags: [postconfig]
 
 - name: Configure Software Update Point (local WSUS)
   ansible.windows.win_shell: |
-    $SiteCode = "{{ mecm_site_code }}"
-    $SUP = Get-CMSoftwareUpdatePoint -SiteCode $SiteCode -ErrorAction SilentlyContinue
-    if (-not $SUP) {
-      Add-CMSoftwareUpdatePoint -SiteCode $SiteCode -SiteSystemServerName "{{ inventory_hostname }}" -ClientConnectionType Intranet -WsusIisPort 8530 -WsusIisSslPort 8531 -EnableCloudSync $false
+    {{ _cm_preamble }}
+    $sup = Get-CMSoftwareUpdatePoint -SiteSystemServerName "{{ inventory_hostname }}" -SiteCode $SiteCode -ErrorAction SilentlyContinue
+    if (-not $sup) {
+      Add-CMSoftwareUpdatePoint -SiteCode $SiteCode `
+        -SiteSystemServerName "{{ inventory_hostname }}" `
+        -ClientConnectionType Intranet `
+        -WsusIisPort 8530 `
+        -WsusIisSslPort 8531
       "added"
-    } else {
-      "SUP already exists"
-    }
+    } else { "SUP already configured" }
   register: sup_config
   changed_when: "'added' in sup_config.stdout"
   tags: [postconfig]
 
-- name: Set Network Access Account
+- name: Register NAA account and assign to Software Distribution
   ansible.windows.win_shell: |
-    $SiteCode = "{{ mecm_site_code }}"
-    Set-CMNetworkAccessAccount -UserName "{{ sccm_naa_account }}" -Password (ConvertTo-SecureString "{{ sccm_naa_password }}" -AsPlainText -Force) -SiteCode $SiteCode
+    {{ _cm_preamble }}
+    $secPwd = ConvertTo-SecureString "{{ sccm_naa_password }}" -AsPlainText -Force
+    $existing = Get-CMAccount -UserName "{{ sccm_naa_account }}" -SiteCode $SiteCode -ErrorAction SilentlyContinue
+    if (-not $existing) {
+      New-CMAccount -UserName "{{ sccm_naa_account }}" -Password $secPwd -SiteCode $SiteCode
+    }
+    Set-CMSoftwareDistributionComponent -SiteCode $SiteCode `
+      -NetworkAccessAccountName "{{ sccm_naa_account }}"
+    "configured"
   no_log: true
+  register: naa_config
+  changed_when: "'configured' in naa_config.stdout"
   tags: [postconfig]
 
 - name: Create / update Boundary Groups from AD Sites
   ansible.windows.win_shell: |
-    $SiteCode = "{{ mecm_site_code }}"
+    {{ _cm_preamble }}
     {% for bg in mecm_boundary_groups %}
-    $bg = Get-CMBoundaryGroup -Name "{{ bg.name }}" -ErrorAction SilentlyContinue
-    if (-not $bg) {
+    $bgObj = Get-CMBoundaryGroup -Name "{{ bg.name }}" -ErrorAction SilentlyContinue
+    if (-not $bgObj) {
       New-CMBoundaryGroup -Name "{{ bg.name }}" -Description "{{ bg.description | default('') }}"
     }
     {% for site in bg.ad_sites %}
-    $boundary = Get-CMBoundary -BoundaryName "{{ site }}" -ErrorAction SilentlyContinue
+    $boundary = Get-CMBoundary | Where-Object { $_.BoundaryType -eq 1 -and $_.Value -eq "{{ site }}" }
     if (-not $boundary) {
       New-CMBoundary -Type ADSite -Value "{{ site }}" -Name "{{ site }}"
     }
@@ -86,23 +109,9 @@
 
 - name: Enable Client Push Installation
   ansible.windows.win_shell: |
-    $SiteCode = "{{ mecm_site_code }}"
-    $props = @{
-      SiteCode = $SiteCode
-      EnableAutomaticClientPushInstallation = ${{ client_push_enabled | lower }}
-    }
-    Set-CMClientPushInstallation @props
-    # Scope to target OU if provided
-    if ("{{ client_push_target_ou }}" -ne "") {
-      # Client push accounts and filters are typically set via console or additional cmdlets
-      # Ensure the install account is present
-      $acct = "{{ sccm_install_account }}"
-      $existing = Get-CMClientPushInstallation -SiteCode $SiteCode | Select-Object -ExpandProperty ChosenAccounts
-      if ($existing -notcontains $acct) {
-        # Note: full account management may require additional steps / console
-        "Client push enabled - verify accounts in console"
-      }
-    }
+    {{ _cm_preamble }}
+    Set-CMClientPushInstallation -SiteCode $SiteCode `
+      -EnableAutomaticClientPushInstallation ${{ client_push_enabled | string | lower }}
   tags: [postconfig]
 
 - name: Final status
