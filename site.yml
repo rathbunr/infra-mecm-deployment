@@ -1,0 +1,40 @@
+---
+- name: Fully automated standalone MECM Current Branch primary site installation
+  hosts: mecm_servers
+  gather_facts: true
+  vars:
+    ansible_connection: winrm
+    ansible_winrm_transport: kerberos
+    ansible_port: 5986
+    ansible_winrm_server_cert_validation: ignore
+
+  pre_tasks:
+    - name: Assert required credential variables are present
+      ansible.builtin.assert:
+        that:
+          - sccm_install_account is defined
+          - sccm_install_password is defined
+          - sccm_naa_account is defined
+          - sccm_naa_password is defined
+          - sql_sa_password is defined
+          - ca_server is defined
+          - ca_template_name is defined
+          - domain_admin_user is defined
+          - domain_admin_password is defined
+          - domain_name is defined
+        fail_msg: "One or more required AAP credential variables are missing. Check Custom Credential Types."
+      tags: [always]
+
+  roles:
+    - role: prereqs
+      tags: [prereqs]
+    - role: certificates
+      tags: [certs]
+    - role: sql_install
+      tags: [sql]
+    - role: wsus_install
+      tags: [wsus]
+    - role: mecm_install
+      tags: [mecm]
+    - role: post_config
+      tags: [postconfig]

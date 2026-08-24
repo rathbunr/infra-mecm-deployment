@@ -1,0 +1,40 @@
+---
+- name: Install WSUS role with SQL backend
+  ansible.windows.win_feature:
+    name:
+      - UpdateServices
+      - UpdateServices-Services
+      - UpdateServices-DB
+    state: present
+    include_management_tools: true
+  register: wsus_feature
+  tags: [wsus]
+
+- name: Create WSUS content directory
+  ansible.windows.win_file:
+    path: "{{ wsus_content_dir }}"
+    state: directory
+  tags: [wsus]
+
+- name: Run WSUS post-install configuration
+  ansible.windows.win_shell: |
+    & "C:\Program Files\Update Services\Tools\wsusutil.exe" postinstall CONTENT_DIR="{{ wsus_content_dir }}" SQL_INSTANCE_NAME="{{ wsus_sql_instance }}"
+  args:
+    creates: "{{ wsus_content_dir }}\\WsusContent"
+  when: wsus_feature is changed
+  register: wsus_postinstall
+  notify: restart wsus service
+  tags: [wsus]
+
+- name: Ensure WSUS service is running
+  ansible.windows.win_service:
+    name: WsusService
+    state: started
+    start_mode: auto
+  tags: [wsus]
+
+- name: Debug WSUS post-install
+  ansible.builtin.debug:
+    var: wsus_postinstall
+  when: wsus_postinstall is defined
+  tags: [wsus]

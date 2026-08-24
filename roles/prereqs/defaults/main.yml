@@ -1,0 +1,113 @@
+---
+# Windows features required by MECM Current Branch (standalone primary)
+mecm_required_features:
+  - NET-Framework-Core
+  - NET-Framework-45-Features
+  - NET-Framework-45-Core
+  - NET-Framework-45-ASPNET
+  - BITS
+  - BITS-IIS-Ext
+  - RDC
+  - WAS
+  - WAS-Process-Model
+  - WAS-NET-Environment
+  - WAS-Config-APIs
+  - Web-Server
+  - Web-WebServer
+  - Web-Common-Http
+  - Web-Default-Doc
+  - Web-Dir-Browsing
+  - Web-Http-Errors
+  - Web-Static-Content
+  - Web-Http-Redirect
+  - Web-DAV-Publishing
+  - Web-Health
+  - Web-Http-Logging
+  - Web-Custom-Logging
+  - Web-Log-Libraries
+  - Web-Request-Monitor
+  - Web-Http-Tracing
+  - Web-Performance
+  - Web-Stat-Compression
+  - Web-Dyn-Compression
+  - Web-Security
+  - Web-Filtering
+  - Web-Basic-Auth
+  - Web-Windows-Auth
+  - Web-Url-Auth
+  - Web-IP-Security
+  - Web-App-Dev
+  - Web-Net-Ext
+  - Web-Net-Ext45
+  - Web-AppInit
+  - Web-ASP
+  - Web-Asp-Net
+  - Web-Asp-Net45
+  - Web-CGI
+  - Web-ISAPI-Ext
+  - Web-ISAPI-Filter
+  - Web-Includes
+  - Web-WebSockets
+  - Web-Mgmt-Tools
+  - Web-Mgmt-Console
+  - Web-Mgmt-Compat
+  - Web-Metabase
+  - Web-Lgcy-Mgmt-Console
+  - Web-Lgcy-Scripting
+  - Web-WMI
+  - Web-Scripting-Tools
+  - RSAT-AD-Tools
+  - RSAT-AD-PowerShell
+  - RSAT-ADDS
+  - RSAT-AD-AdminCenter
+
+# Firewall rules for MECM + SQL + WSUS
+mecm_firewall_rules:
+  - name: "SQL Server (TCP 1433)"
+    localport: 1433
+    protocol: tcp
+    direction: in
+    action: allow
+    profiles: domain,private
+  - name: "SMB (TCP 445)"
+    localport: 445
+    protocol: tcp
+    direction: in
+    action: allow
+    profiles: domain,private
+  - name: "MECM HTTP (TCP 80)"
+    localport: 80
+    protocol: tcp
+    direction: in
+    action: allow
+    profiles: domain,private
+  - name: "MECM HTTPS (TCP 443)"
+    localport: 443
+    protocol: tcp
+    direction: in
+    action: allow
+    profiles: domain,private
+  - name: "MECM Client Notification (TCP 10123)"
+    localport: 10123
+    protocol: tcp
+    direction: in
+    action: allow
+    profiles: domain,private
+  - name: "MECM WSUS HTTP (TCP 8530)"
+    localport: 8530
+    protocol: tcp
+    direction: in
+    action: allow
+    profiles: domain,private
+  - name: "MECM WSUS HTTPS (TCP 8531)"
+    localport: 8531
+    protocol: tcp
+    direction: in
+    action: allow
+    profiles: domain,private
+  - name: "MECM PXE (UDP 4011)"
+    localport: 4011
+    protocol: udp
+    direction: in
+    action: allow
+    profiles: domain,private

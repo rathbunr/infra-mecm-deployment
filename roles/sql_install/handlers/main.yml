@@ -1,0 +1,10 @@
+---
+- name: restart sql server
+  ansible.windows.win_service:
+    name: MSSQLSERVER
+    state: restarted
+
+- name: restart sql agent
+  ansible.windows.win_service:
+    name: SQLSERVERAGENT
+    state: restarted

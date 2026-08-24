@@ -1,0 +1,115 @@
+---
+- name: Wait for Configuration Manager console / WMI provider readiness
+  ansible.windows.win_shell: |
+    $timeout = 600
+    $elapsed = 0
+    do {
+      try {
+        $null = Get-WmiObject -Namespace "root\SMS" -Class SMS_ProviderLocation -ErrorAction Stop
+        "ready"
+        break
+      } catch {
+        Start-Sleep -Seconds 15
+        $elapsed += 15
+      }
+    } while ($elapsed -lt $timeout)
+    if ($elapsed -ge $timeout) { throw "SMS Provider not ready after $timeout seconds" }
+  changed_when: false
+  tags: [postconfig]
+
+- name: Configure Management Point for HTTPS
+  ansible.windows.win_shell: |
+    $SiteCode = "{{ mecm_site_code }}"
+    $MP = Get-CMManagementPoint -SiteCode $SiteCode -ErrorAction SilentlyContinue
+    if ($MP) {
+      Set-CMManagementPoint -SiteCode $SiteCode -ClientConnectionType InternetAndIntranet -AllowDeviceConnections $true -SslState 1
+      "updated"
+    } else {
+      "MP role already present or not yet discovered - ensure site system role is installed"
+    }
+  register: mp_config
+  changed_when: "'updated' in mp_config.stdout"
+  tags: [postconfig]
+
+- name: Configure Distribution Point for HTTPS
+  ansible.windows.win_shell: |
+    $SiteCode = "{{ mecm_site_code }}"
+    $DP = Get-CMDistributionPoint -SiteCode $SiteCode -ErrorAction SilentlyContinue
+    if ($DP) {
+      Set-CMDistributionPoint -SiteCode $SiteCode -ClientConnectionType InternetAndIntranet -CertificateFlags 1
+      "updated"
+    } else {
+      "DP role already present"
+    }
+  register: dp_config
+  changed_when: "'updated' in dp_config.stdout"
+  tags: [postconfig]
+
+- name: Configure Software Update Point (local WSUS)
+  ansible.windows.win_shell: |
+    $SiteCode = "{{ mecm_site_code }}"
+    $SUP = Get-CMSoftwareUpdatePoint -SiteCode $SiteCode -ErrorAction SilentlyContinue
+    if (-not $SUP) {
+      Add-CMSoftwareUpdatePoint -SiteCode $SiteCode -SiteSystemServerName "{{ inventory_hostname }}" -ClientConnectionType Intranet -WsusIisPort 8530 -WsusIisSslPort 8531 -EnableCloudSync $false
+      "added"
+    } else {
+      "SUP already exists"
+    }
+  register: sup_config
+  changed_when: "'added' in sup_config.stdout"
+  tags: [postconfig]
+
+- name: Set Network Access Account
+  ansible.windows.win_shell: |
+    $SiteCode = "{{ mecm_site_code }}"
+    Set-CMNetworkAccessAccount -UserName "{{ sccm_naa_account }}" -Password (ConvertTo-SecureString "{{ sccm_naa_password }}" -AsPlainText -Force) -SiteCode $SiteCode
+  no_log: true
+  tags: [postconfig]
+
+- name: Create / update Boundary Groups from AD Sites
+  ansible.windows.win_shell: |
+    $SiteCode = "{{ mecm_site_code }}"
+    {% for bg in mecm_boundary_groups %}
+    $bg = Get-CMBoundaryGroup -Name "{{ bg.name }}" -ErrorAction SilentlyContinue
+    if (-not $bg) {
+      New-CMBoundaryGroup -Name "{{ bg.name }}" -Description "{{ bg.description | default('') }}"
+    }
+    {% for site in bg.ad_sites %}
+    $boundary = Get-CMBoundary -BoundaryName "{{ site }}" -ErrorAction SilentlyContinue
+    if (-not $boundary) {
+      New-CMBoundary -Type ADSite -Value "{{ site }}" -Name "{{ site }}"
+    }
+    Add-CMBoundaryToGroup -BoundaryName "{{ site }}" -BoundaryGroupName "{{ bg.name }}" -ErrorAction SilentlyContinue
+    {% endfor %}
+    {% endfor %}
+  tags: [postconfig]
+
+- name: Enable Client Push Installation
+  ansible.windows.win_shell: |
+    $SiteCode = "{{ mecm_site_code }}"
+    $props = @{
+      SiteCode = $SiteCode
+      EnableAutomaticClientPushInstallation = ${{ client_push_enabled | lower }}
+    }
+    Set-CMClientPushInstallation @props
+    # Scope to target OU if provided
+    if ("{{ client_push_target_ou }}" -ne "") {
+      # Client push accounts and filters are typically set via console or additional cmdlets
+      # Ensure the install account is present
+      $acct = "{{ sccm_install_account }}"
+      $existing = Get-CMClientPushInstallation -SiteCode $SiteCode | Select-Object -ExpandProperty ChosenAccounts
+      if ($existing -notcontains $acct) {
+        # Note: full account management may require additional steps / console
+        "Client push enabled - verify accounts in console"
+      }
+    }
+  tags: [postconfig]
+
+- name: Final status
+  ansible.builtin.debug:
+    msg:
+      - "MECM standalone primary site installation and post-configuration complete."
+      - "Site Code: {{ mecm_site_code }}"
+      - "IIS Certificate Thumbprint: {{ mecm_iis_cert_thumbprint | default('N/A') }}"
+      - "Review SMS logs under {{ mecm_install_directory }}\\Logs and C:\\ConfigMgrSetup.log"
+  tags: [postconfig]

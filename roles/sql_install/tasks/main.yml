@@ -1,0 +1,80 @@
+---
+- name: Check if SQL Server is already installed
+  ansible.windows.win_service:
+    name: MSSQLSERVER
+  register: sql_service
+  failed_when: false
+  tags: [sql]
+
+- name: Template SQL ConfigurationFile.ini
+  ansible.windows.win_template:
+    src: ConfigurationFile.ini.j2
+    dest: "{{ sql_config_file }}"
+  when: sql_service.state is not defined or sql_service.state != "running"
+  tags: [sql]
+
+- name: Install SQL Server 2022 (unattended)
+  ansible.windows.win_shell: |
+    & "{{ sql_setup_exe }}" /ConfigurationFile="{{ sql_config_file }}"
+  args:
+    creates: "C:\\Program Files\\Microsoft SQL Server\\MSSQL16.MSSQLSERVER\\MSSQL\\Binn\\sqlservr.exe"
+  when: sql_service.state is not defined or sql_service.state != "running"
+  register: sql_install
+  tags: [sql]
+
+- name: Wait for SQL Server service to become available
+  ansible.windows.win_service:
+    name: MSSQLSERVER
+    state: started
+  retries: 30
+  delay: 10
+  when: sql_install is changed
+  tags: [sql]
+
+- name: Enable TCP/IP protocol for SQL Server
+  ansible.windows.win_shell: |
+    Import-Module SqlServer -ErrorAction SilentlyContinue
+    $wmi = New-Object Microsoft.SqlServer.Management.Smo.Wmi.ManagedComputer
+    $uri = "ManagedComputer[@Name='$env:COMPUTERNAME']/ServerInstance[@Name='{{ sql_instance_name }}']/ServerProtocol[@Name='Tcp']"
+    $tcp = $wmi.GetSmoObject($uri)
+    if ($tcp.IsEnabled -eq $false) {
+      $tcp.IsEnabled = $true
+      $tcp.Alter()
+      "changed"
+    } else {
+      "already_enabled"
+    }
+  register: tcp_enable
+  changed_when: "'changed' in tcp_enable.stdout"
+  notify: restart sql server
+  tags: [sql]
+
+- name: Set SQL Server min and max memory
+  ansible.windows.win_shell: |
+    $query = @"
+    EXEC sp_configure 'show advanced options', 1;
+    RECONFIGURE;
+    EXEC sp_configure 'min server memory', {{ sql_min_server_memory_mb }};
+    EXEC sp_configure 'max server memory', {{ sql_max_server_memory_mb }};
+    RECONFIGURE;
+    "@
+    Invoke-Sqlcmd -ServerInstance "localhost" -Query $query -TrustServerCertificate
+  tags: [sql]
+
+- name: Ensure SQL Server firewall rule exists
+  ansible.windows.win_firewall_rule:
+    name: "SQL Server (TCP 1433)"
+    localport: 1433
+    protocol: tcp
+    direction: in
+    action: allow
+    profiles: domain,private
+    state: present
+    enabled: true
+  tags: [sql]
+
+- name: Debug SQL install result
+  ansible.builtin.debug:
+    var: sql_install
+  when: sql_install is defined
+  tags: [sql]

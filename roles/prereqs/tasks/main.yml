@@ -1,0 +1,135 @@
+---
+- name: Validate WinRM connectivity
+  ansible.windows.win_ping:
+  tags: [prereqs, always]
+
+- name: Resolve DNS for target and domain controllers
+  ansible.windows.win_shell: |
+    Resolve-DnsName -Name {{ inventory_hostname }} -ErrorAction Stop | Out-Null
+    Resolve-DnsName -Name {{ domain_name }} -ErrorAction Stop | Out-Null
+  changed_when: false
+  tags: [prereqs]
+
+- name: Confirm domain membership
+  ansible.windows.win_shell: |
+    $cs = Get-CimInstance -ClassName Win32_ComputerSystem
+    if ($cs.PartOfDomain -ne $true) { throw "Host is not domain-joined" }
+    if ($cs.Domain -ne "{{ domain_name }}") { throw "Host domain mismatch" }
+  changed_when: false
+  tags: [prereqs]
+
+- name: Install required Windows Features
+  ansible.windows.win_feature:
+    name: "{{ item }}"
+    state: present
+    include_management_tools: true
+  loop: "{{ mecm_required_features }}"
+  register: feature_install
+  notify: restart iis
+  tags: [prereqs]
+
+- name: Disable Internet Explorer Enhanced Security Configuration (Admin)
+  ansible.windows.win_regedit:
+    path: HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}
+    name: IsInstalled
+    data: 0
+    type: dword
+  tags: [prereqs]
+
+- name: Disable Internet Explorer Enhanced Security Configuration (User)
+  ansible.windows.win_regedit:
+    path: HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A8-37EF-4b3f-8CFC-4F3A74704073}
+    name: IsInstalled
+    data: 0
+    type: dword
+  tags: [prereqs]
+
+- name: Create MECM firewall rules
+  ansible.windows.win_firewall_rule:
+    name: "{{ item.name }}"
+    localport: "{{ item.localport }}"
+    protocol: "{{ item.protocol }}"
+    direction: "{{ item.direction }}"
+    action: "{{ item.action }}"
+    profiles: "{{ item.profiles }}"
+    state: present
+    enabled: true
+  loop: "{{ mecm_firewall_rules }}"
+  tags: [prereqs]
+
+- name: Check if AD schema has already been extended for MECM
+  ansible.windows.win_shell: |
+    $schema = [directoryservices.activedirectory.activedirectoryschema]::GetCurrentSchema()
+    $attr = $schema.FindClass("mSSMSSite")
+    if ($attr) { "extended" } else { "not_extended" }
+  register: schema_check
+  changed_when: false
+  failed_when: false
+  tags: [prereqs]
+
+- name: Stage extadsch.exe from MECM media
+  ansible.windows.win_copy:
+    src: "{{ mecm_media_unc }}\\SMSSETUP\\BIN\\X64\\extadsch.exe"
+    dest: "C:\\Temp\\extadsch.exe"
+    remote_src: true
+  when: schema_check.stdout | trim != "extended"
+  tags: [prereqs]
+
+- name: Extend Active Directory schema for MECM (idempotent)
+  ansible.windows.win_shell: |
+    C:\Temp\extadsch.exe
+  args:
+    creates: C:\Temp\extadsch.log
+  when: schema_check.stdout | trim != "extended"
+  register: schema_extend
+  tags: [prereqs]
+
+- name: Verify schema extension log
+  ansible.windows.win_shell: |
+    if (Select-String -Path C:\Temp\extadsch.log -Pattern "Successfully extended the Active Directory schema" -Quiet) {
+      "success"
+    } else {
+      Get-Content C:\Temp\extadsch.log -Tail 50
+      throw "Schema extension failed - see log above"
+    }
+  when: schema_extend is changed
+  changed_when: false
+  tags: [prereqs]
+
+- name: Ensure System Management container exists
+  microsoft.ad.object:
+    name: "System Management"
+    path: "CN=System,DC={{ domain_name.split('.') | join(',DC=') }}"
+    object_class: container
+    state: present
+  register: sysmgmt_container
+  tags: [prereqs]
+
+- name: Delegate Full Control on System Management container to site server computer account
+  ansible.windows.win_shell: |
+    Import-Module ActiveDirectory
+    $container = "CN=System Management,CN=System,DC={{ domain_name.split('.') | join(',DC=') }}"
+    $computer = "{{ inventory_hostname_short }}$"
+    $acl = Get-Acl -Path "AD:$container"
+    $identity = New-Object System.Security.Principal.NTAccount("{{ domain_netbios }}\$computer")
+    $rights = [System.DirectoryServices.ActiveDirectoryRights]::GenericAll
+    $type = [System.Security.AccessControl.AccessControlType]::Allow
+    $inheritance = [System.DirectoryServices.ActiveDirectorySecurityInheritance]::All
+    $rule = New-Object System.DirectoryServices.ActiveDirectoryAccessRule($identity, $rights, $type, $inheritance)
+    $acl.AddAccessRule($rule)
+    Set-Acl -Path "AD:$container" -AclObject $acl
+  when: sysmgmt_container is changed or not system_management_container_created | default(false)
+  tags: [prereqs]
+
+- name: Create working directories
+  ansible.windows.win_file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - C:\Temp
+    - "{{ mecm_prereq_path }}"
+    - "{{ sql_data_dir }}"
+    - "{{ sql_log_dir }}"
+    - "{{ sql_tempdb_dir }}"
+    - "{{ sql_backup_dir }}"
+  tags: [prereqs]

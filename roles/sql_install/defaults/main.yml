@@ -1,0 +1,7 @@
+---
+sql_config_file: "C:\\Temp\\ConfigurationFile.ini"
+sql_setup_exe: "{{ sql_media_unc }}\\setup.exe"
+sql_features: "SQLENGINE,FULLTEXT,CONN,BC,SDK"
+sql_instance_id: "MSSQLSERVER"
+sql_svc_account: "NT AUTHORITY\\NETWORK SERVICE"
+sql_agt_account: "NT AUTHORITY\\NETWORK SERVICE"

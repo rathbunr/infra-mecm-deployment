@@ -1,0 +1,5 @@
+---
+cert_request_inf: "C:\\Temp\\mecm_site_cert.inf"
+cert_request_req: "C:\\Temp\\mecm_site_cert.req"
+cert_request_cer: "C:\\Temp\\mecm_site_cert.cer"
+cert_request_rsp: "C:\\Temp\\mecm_site_cert.rsp"

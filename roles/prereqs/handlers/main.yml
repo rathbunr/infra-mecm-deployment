@@ -1,0 +1,10 @@
+---
+- name: restart iis
+  ansible.windows.win_service:
+    name: W3SVC
+    state: restarted
+
+- name: restart bits
+  ansible.windows.win_service:
+    name: BITS
+    state: restarted

@@ -1,0 +1,94 @@
+---
+- name: Generate certificate request INF file
+  ansible.windows.win_copy:
+    dest: "{{ cert_request_inf }}"
+    content: |
+      [Version]
+      Signature="$Windows NT$"
+
+      [NewRequest]
+      Subject = "{{ iis_cert_subject }}"
+      FriendlyName = "{{ iis_cert_friendly_name }}"
+      KeySpec = 1
+      KeyLength = 2048
+      Exportable = TRUE
+      MachineKeySet = TRUE
+      SMIME = FALSE
+      PrivateKeyArchive = FALSE
+      UserProtected = FALSE
+      UseExistingKeySet = FALSE
+      ProviderName = "Microsoft RSA SChannel Cryptographic Provider"
+      ProviderType = 12
+      RequestType = PKCS10
+      KeyUsage = 0xa0
+
+      [EnhancedKeyUsageExtension]
+      OID=1.3.6.1.5.5.7.3.1
+  tags: [certs]
+
+- name: Create certificate request
+  ansible.windows.win_shell: |
+    certreq -new "{{ cert_request_inf }}" "{{ cert_request_req }}"
+  args:
+    creates: "{{ cert_request_req }}"
+  tags: [certs]
+
+- name: Submit certificate request to enterprise CA
+  ansible.windows.win_shell: |
+    certreq -submit -config "{{ ca_server }}\{{ ca_server.split('.')[0] }}" -attrib "CertificateTemplate:{{ ca_template_name }}" "{{ cert_request_req }}" "{{ cert_request_cer }}"
+  register: cert_submit
+  failed_when: >
+    cert_submit.rc != 0 and
+    ("Certificate request is pending" not in cert_submit.stdout) and
+    ("Certificate retrieved" not in cert_submit.stdout)
+  tags: [certs]
+
+- name: Retrieve pending certificate if necessary
+  ansible.windows.win_shell: |
+    certreq -retrieve -config "{{ ca_server }}\{{ ca_server.split('.')[0] }}" -attrib "CertificateTemplate:{{ ca_template_name }}" "{{ cert_request_req }}" "{{ cert_request_cer }}"
+  when: "'pending' in cert_submit.stdout | lower"
+  tags: [certs]
+
+- name: Accept and install the certificate into Local Machine\Personal
+  ansible.windows.win_shell: |
+    certreq -accept "{{ cert_request_cer }}"
+  register: cert_accept
+  tags: [certs]
+
+- name: Locate the installed certificate by friendly name and capture thumbprint
+  ansible.windows.win_shell: |
+    $cert = Get-ChildItem -Path Cert:\LocalMachine\My |
+            Where-Object { $_.FriendlyName -eq "{{ iis_cert_friendly_name }}" } |
+            Sort-Object NotBefore -Descending |
+            Select-Object -First 1
+    if (-not $cert) { throw "Certificate with friendly name '{{ iis_cert_friendly_name }}' not found" }
+    $cert.Thumbprint
+  register: cert_thumbprint_raw
+  changed_when: false
+  tags: [certs]
+
+- name: Set certificate thumbprint fact
+  ansible.builtin.set_fact:
+    mecm_iis_cert_thumbprint: "{{ cert_thumbprint_raw.stdout | trim }}"
+  tags: [certs]
+
+- name: Debug certificate thumbprint
+  ansible.builtin.debug:
+    msg: "IIS / Site System certificate thumbprint = {{ mecm_iis_cert_thumbprint }}"
+  tags: [certs]
+
+- name: Bind certificate to IIS Default Web Site (HTTPS 443)
+  ansible.windows.win_shell: |
+    Import-Module WebAdministration
+    $thumb = "{{ mecm_iis_cert_thumbprint }}"
+    $binding = Get-WebBinding -Name "Default Web Site" -Protocol https -Port 443 -ErrorAction SilentlyContinue
+    if ($binding) {
+      $binding.RemoveSslCertificate()
+      $binding.AddSslCertificate($thumb, "My")
+    } else {
+      New-WebBinding -Name "Default Web Site" -Protocol https -Port 443
+      $newBinding = Get-WebBinding -Name "Default Web Site" -Protocol https -Port 443
+      $newBinding.AddSslCertificate($thumb, "My")
+    }
+  notify: restart iis
+  tags: [certs]

@@ -1,0 +1,39 @@
+[Identification]
+Action=InstallPrimarySite
+
+[Options]
+ProductID=EVAL
+SiteCode={{ mecm_site_code }}
+SiteName={{ mecm_site_name }}
+SMSInstallDir={{ mecm_install_directory }}
+SDKServer={{ inventory_hostname }}
+PrerequisiteComp=1
+PrerequisitePath={{ mecm_prereq_path }}
+MobileDeviceLanguage=0
+AdminConsole=1
+JoinCEIP=0
+
+[SQLConfigOptions]
+SQLServerName={{ inventory_hostname }}
+DatabaseName=CM_{{ mecm_site_code }}
+SQLSSBPort=4022
+SQLDataFilePath={{ sql_data_dir }}
+SQLLogFilePath={{ sql_log_dir }}
+
+[CloudConnectorOptions]
+CloudConnector=0
+UseProxy=0
+ProxyName=
+ProxyPort=
+
+[SystemRoleOptions]
+DistributionPoint=1
+ManagementPoint=1
+RoleCommunicationType=1
+
+[HierarchyExpansionOption]
+CCARSiteServer=
+
+[SABranchOptions]
+SAActive=1
+CurrentBranch=1
